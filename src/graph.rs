@@ -3,6 +3,7 @@
 use std::{
     collections::{BTreeMap, HashSet},
     hash::Hash,
+    net::SocketAddr,
     ops::Sub,
 };
 
@@ -43,11 +44,14 @@ where
     ///
     /// let graph: Graph<&str> = Graph::new();
     /// ```
-    pub fn new() -> Self
-    where
-        T: Default,
-    {
-        Default::default()
+    pub fn new() -> Self {
+        Self {
+            edges: Default::default(),
+            index: None,
+            degree_matrix: None,
+            adjacency_matrix: None,
+            laplacian_matrix: None,
+        }
     }
 
     /// Inserts an edge into the graph.
@@ -451,6 +455,28 @@ fn sorted_eigenvalue_vector_pairs(
     pairs
 }
 
+impl Graph<SocketAddr> {
+    pub fn can_reach(&self, source: SocketAddr, target: SocketAddr) -> bool {
+        crepe::crepe! {
+            @input
+            struct CrepeEdge(Edge<SocketAddr>);
+
+            @output
+            struct Reachable(SocketAddr, SocketAddr);
+
+            Reachable(*edge.source(), *edge.target()) <- CrepeEdge(edge);
+            Reachable(*edge.source(), z) <- CrepeEdge(edge), Reachable(*edge.target(), z);
+        }
+
+        let mut runtime = Crepe::new();
+        runtime.extend(self.edges.iter().copied().map(CrepeEdge));
+        let (reachable,) = runtime.run();
+
+        reachable.contains(&Reachable(source, target))
+            || reachable.contains(&Reachable(target, source))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use nalgebra::dmatrix;
@@ -723,6 +749,31 @@ mod tests {
             fiedler_values_indexed.get_key_value(d),
             Some((&d, &-0.6532814824381881))
         );
+    }
+
+    #[test]
+    fn reachability() {
+        use std::net::Ipv4Addr;
+
+        let mut graph = Graph::new();
+
+        let addrs: Vec<SocketAddr> = (3021..3050)
+            .map(|port| (Ipv4Addr::LOCALHOST, port).into())
+            .collect();
+
+        for pair in addrs.windows(2) {
+            if let [a1, a2] = pair {
+                graph.insert(Edge::new(*a1, *a2));
+            } else {
+                unreachable!()
+            }
+        }
+
+        for i in 0..addrs.len() - 1 {
+            let (addr, last_addr) = (addrs[i], addrs[addrs.len() - 1]);
+            assert!(graph.can_reach(addr, last_addr));
+            assert!(graph.can_reach(last_addr, addr));
+        }
     }
 
     //
